@@ -1,0 +1,1579 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="514" onload="init(evt)" viewBox="0 0 1200 514" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<defs >
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	.func_g:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	var details, searchbtn, matchedtxt, svg;
+	function init(evt) { 
+		details = document.getElementById("details").firstChild; 
+		searchbtn = document.getElementById("search");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	// mouse-over for info
+	function s(node) {		// show
+		info = g_to_text(node);
+		details.nodeValue = "Function: " + info;
+	}
+	function c() {			// clear
+		details.nodeValue = ' ';
+	}
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	})
+
+	// functions
+	function find_child(parent, name, attr) {
+		var children = parent.childNodes;
+		for (var i=0; i<children.length;i++) {
+			if (children[i].tagName == name)
+				return (attr != undefined) ? children[i].attributes[attr].value : children[i];
+		}
+		return;
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_"+attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_"+attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_"+attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		if (func != null)
+			func = func.replace(/ .*/, "");
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes["width"].value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes["x"].value = parseFloat(r.attributes["x"].value) +3;
+		
+		// Smaller than this size won't fit anything
+		if (w < 2*12*0.59) {
+			t.textContent = "";
+			return;
+		}
+		
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+		
+		for (var x=txt.length-2; x>0; x--) {
+			if (t.getSubStringLength(0, x+2) <= w) { 
+				t.textContent = txt.substring(0,x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = (parseFloat(e.attributes["x"].value) - x - 10) * ratio + 10;
+				if(e.tagName == "text") e.attributes["x"].value = find_child(e.parentNode, "rect", "x") + 3;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseFloat(e.attributes["width"].value) * ratio;
+			}
+		}
+		
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_child(c[i], x-10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = 10;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseInt(svg.width.baseVal.value) - (10*2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) { 
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr["width"].value);
+		var xmin = parseFloat(attr["x"].value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr["y"].value);
+		var ratio = (svg.width.baseVal.value - 2*10) / width;
+		
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+		
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "1.0";
+		
+		var el = document.getElementsByTagName("g");
+		for(var i=0;i<el.length;i++){
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a["x"].value);
+			var ew = parseFloat(a["width"].value);
+			// Is it an ancestor
+			if (0 == 0) {
+				var upstack = parseFloat(a["y"].value) > ymin;
+			} else {
+				var upstack = parseFloat(a["y"].value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.style["opacity"] = "0.5";
+					zoom_parent(e);
+					e.onclick = function(e){unzoom(); zoom(this);};
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.style["display"] = "none";
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.style["display"] = "none";
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					e.onclick = function(e){zoom(this);};
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "0.0";
+		
+		var el = document.getElementsByTagName("g");
+		for(i=0;i<el.length;i++) {
+			el[i].style["display"] = "block";
+			el[i].style["opacity"] = "1";
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}	
+
+	// search
+	function reset_search() {
+		var el = document.getElementsByTagName("rect");
+		for (var i=0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.style["opacity"] = "0.1";
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.style["opacity"] = "0.0";
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementsByTagName("g");
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			if (e.attributes["class"].value != "func_g")
+				continue;
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (rect == null) {
+				// the rect might be wrapped in an anchor
+				// if nameattr href is being used
+				if (rect = find_child(e, "a")) {
+				    rect = find_child(r, "rect");
+				}
+			}
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes["width"].value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes["x"].value);
+				orig_save(rect, "fill");
+				rect.attributes["fill"].value =
+				    "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.style["opacity"] = "1.0";
+		searchbtn.firstChild.nodeValue = "Reset Search"
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+				return a - b;
+			if (a < b || a > b)
+				return a - b;
+			return matches[b] - matches[a];
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.style["opacity"] = "1.0";
+		pct = 100 * count / maxwidth;
+		if (pct == 100)
+			pct = "100"
+		else
+			pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+	function searchover(e) {
+		searchbtn.style["opacity"] = "1.0";
+	}
+	function searchout(e) {
+		if (searching) {
+			searchbtn.style["opacity"] = "1.0";
+		} else {
+			searchbtn.style["opacity"] = "0.1";
+		}
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="514.0" fill="url(#background)"  />
+<text text-anchor="middle" x="600.00" y="24" font-size="17" font-family="Verdana" fill="rgb(0,0,0)"  >Flame Graph</text>
+<text text-anchor="" x="10.00" y="497" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="details" > </text>
+<text text-anchor="" x="10.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="unzoom" onclick="unzoom()" style="opacity:0.0;cursor:pointer" >Reset Zoom</text>
+<text text-anchor="" x="1090.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="search" onmouseover="searchover()" onmouseout="searchout()" onclick="search_prompt()" style="opacity:0.1;cursor:pointer" >Search</text>
+<text text-anchor="" x="1090.00" y="497" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="matched" > </text>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_int_malloc (4 samples, 1.91%)</title><rect x="60.8" y="433" width="22.6" height="15.0" fill="rgb(220,147,19)" rx="2" ry="2" />
+<text text-anchor="" x="63.81" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ssleay_rand_add.part.0 (1 samples, 0.48%)</title><rect x="1178.7" y="273" width="5.7" height="15.0" fill="rgb(232,127,24)" rx="2" ry="2" />
+<text text-anchor="" x="1181.71" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::ContextifyScript::New (1 samples, 0.48%)</title><rect x="1015.0" y="129" width="5.6" height="15.0" fill="rgb(223,26,23)" rx="2" ry="2" />
+<text text-anchor="" x="1017.98" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_getspecific (1 samples, 0.48%)</title><rect x="535.1" y="257" width="5.6" height="15.0" fill="rgb(239,193,54)" rx="2" ry="2" />
+<text text-anchor="" x="538.07" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Module.load module.js:335 (14 samples, 6.70%)</title><rect x="247.1" y="305" width="79.1" height="15.0" fill="rgb(209,99,44)" rx="2" ry="2" />
+<text text-anchor="" x="250.13" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Module.lo..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::ContextifyScript::New (9 samples, 4.31%)</title><rect x="484.3" y="241" width="50.8" height="15.0" fill="rgb(253,66,33)" rx="2" ry="2" />
+<text text-anchor="" x="487.26" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >node:..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>writeOrBuffer _stream_writable.js:255 (6 samples, 2.87%)</title><rect x="896.4" y="209" width="33.9" height="15.0" fill="rgb(211,11,1)" rx="2" ry="2" />
+<text text-anchor="" x="899.41" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >wr..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>createPool buffer.js:28 (3 samples, 1.44%)</title><rect x="687.5" y="273" width="16.9" height="15.0" fill="rgb(233,193,28)" rx="2" ry="2" />
+<text text-anchor="" x="690.51" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::FunctionTemplate::GetFunction (1 samples, 0.48%)</title><rect x="721.4" y="257" width="5.6" height="15.0" fill="rgb(206,4,8)" rx="2" ry="2" />
+<text text-anchor="" x="724.39" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.require node.js:883 (18 samples, 8.61%)</title><rect x="371.3" y="241" width="101.7" height="15.0" fill="rgb(248,36,7)" rx="2" ry="2" />
+<text text-anchor="" x="374.34" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >NativeModule..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnbound (1 samples, 0.48%)</title><rect x="1015.0" y="113" width="5.6" height="15.0" fill="rgb(232,135,26)" rx="2" ry="2" />
+<text text-anchor="" x="1017.98" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::TimerWrap::Initialize (1 samples, 0.48%)</title><rect x="659.3" y="257" width="5.6" height="15.0" fill="rgb(224,6,54)" rx="2" ry="2" />
+<text text-anchor="" x="662.28" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::Function::NewInstance (3 samples, 1.44%)</title><rect x="224.5" y="193" width="17.0" height="15.0" fill="rgb(247,157,7)" rx="2" ry="2" />
+<text text-anchor="" x="227.55" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>fs.lstatSync fs.js:837 (3 samples, 1.44%)</title><rect x="224.5" y="241" width="17.0" height="15.0" fill="rgb(239,72,29)" rx="2" ry="2" />
+<text text-anchor="" x="227.55" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>exports._deprecate internal/util.js:40 (1 samples, 0.48%)</title><rect x="715.7" y="257" width="5.7" height="15.0" fill="rgb(207,129,33)" rx="2" ry="2" />
+<text text-anchor="" x="718.74" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Function:~ net.js:1 (2 samples, 0.96%)</title><rect x="958.5" y="97" width="11.3" height="15.0" fill="rgb(209,48,46)" rx="2" ry="2" />
+<text text-anchor="" x="961.52" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.require node.js:883 (15 samples, 7.18%)</title><rect x="597.2" y="321" width="84.7" height="15.0" fill="rgb(223,34,29)" rx="2" ry="2" />
+<text text-anchor="" x="600.18" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >NativeMod..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Function:~ fs.js:1 (21 samples, 10.05%)</title><rect x="365.7" y="257" width="118.6" height="15.0" fill="rgb(225,2,31)" rx="2" ry="2" />
+<text text-anchor="" x="368.69" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Function:~ fs...</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::InitContextify (1 samples, 0.48%)</title><rect x="117.3" y="337" width="5.6" height="15.0" fill="rgb(240,101,19)" rx="2" ry="2" />
+<text text-anchor="" x="120.27" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Function:~ module.js:1 (33 samples, 15.79%)</title><rect x="348.8" y="305" width="186.3" height="15.0" fill="rgb(216,154,11)" rx="2" ry="2" />
+<text text-anchor="" x="351.76" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Function:~ module.js:1</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_dl_sysdep_start (1 samples, 0.48%)</title><rect x="49.5" y="433" width="5.7" height="15.0" fill="rgb(218,168,18)" rx="2" ry="2" />
+<text text-anchor="" x="52.52" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::Function::Call (131 samples, 62.68%)</title><rect x="106.0" y="385" width="739.6" height="15.0" fill="rgb(236,106,37)" rx="2" ry="2" />
+<text text-anchor="" x="108.98" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v8::Function::Call</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.compile node.js:949 (17 samples, 8.13%)</title><rect x="377.0" y="225" width="96.0" height="15.0" fill="rgb(214,214,48)" rx="2" ry="2" />
+<text text-anchor="" x="379.99" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >NativeModul..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.compile node.js:949 (5 samples, 2.39%)</title><rect x="614.1" y="209" width="28.2" height="15.0" fill="rgb(247,97,24)" rx="2" ry="2" />
+<text text-anchor="" x="617.11" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >N..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::Function::Call (41 samples, 19.62%)</title><rect x="873.8" y="337" width="231.5" height="15.0" fill="rgb(215,14,54)" rx="2" ry="2" />
+<text text-anchor="" x="876.83" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v8::Function::Call</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>DefineObjectProperty native v8natives.js:461 (1 samples, 0.48%)</title><rect x="710.1" y="241" width="5.6" height="15.0" fill="rgb(230,45,32)" rx="2" ry="2" />
+<text text-anchor="" x="713.10" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::Binding (1 samples, 0.48%)</title><rect x="964.2" y="81" width="5.6" height="15.0" fill="rgb(226,27,18)" rx="2" ry="2" />
+<text text-anchor="" x="967.16" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_itoa_word (2 samples, 0.96%)</title><rect x="382.6" y="145" width="11.3" height="15.0" fill="rgb(233,35,19)" rx="2" ry="2" />
+<text text-anchor="" x="385.63" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>doWrite _stream_writable.js:284 (5 samples, 2.39%)</title><rect x="902.1" y="193" width="28.2" height="15.0" fill="rgb(214,41,14)" rx="2" ry="2" />
+<text text-anchor="" x="905.06" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >d..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>APPLY_PREPARE native runtime.js:412 (1 samples, 0.48%)</title><rect x="303.6" y="241" width="5.6" height="15.0" fill="rgb(234,20,18)" rx="2" ry="2" />
+<text text-anchor="" x="306.59" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Uint8Array native typedarray.js:122 (1 samples, 0.48%)</title><rect x="698.8" y="241" width="5.6" height="15.0" fill="rgb(210,85,47)" rx="2" ry="2" />
+<text text-anchor="" x="701.80" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bind native v8natives.js:1197 (2 samples, 0.96%)</title><rect x="941.6" y="193" width="11.3" height="15.0" fill="rgb(251,196,6)" rx="2" ry="2" />
+<text text-anchor="" x="944.58" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::ContextifyScript::New (8 samples, 3.83%)</title><rect x="969.8" y="81" width="45.2" height="15.0" fill="rgb(235,36,10)" rx="2" ry="2" />
+<text text-anchor="" x="972.81" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >node..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>startup.globalTimeouts node.js:188 (15 samples, 7.18%)</title><rect x="597.2" y="337" width="84.7" height="15.0" fill="rgb(249,73,34)" rx="2" ry="2" />
+<text text-anchor="" x="600.18" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >startup.g..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>InnerArrayJoin native array.js:317 (1 samples, 0.48%)</title><rect x="777.8" y="305" width="5.7" height="15.0" fill="rgb(249,227,23)" rx="2" ry="2" />
+<text text-anchor="" x="780.85" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>defineProperties native v8natives.js:798 (3 samples, 1.44%)</title><rect x="580.2" y="321" width="17.0" height="15.0" fill="rgb(225,75,53)" rx="2" ry="2" />
+<text text-anchor="" x="583.24" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>startup.processStdio node.js:626 (1 samples, 0.48%)</title><rect x="840.0" y="337" width="5.6" height="15.0" fill="rgb(205,37,13)" rx="2" ry="2" />
+<text text-anchor="" x="842.95" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>uv__run_timers (41 samples, 19.62%)</title><rect x="873.8" y="401" width="231.5" height="15.0" fill="rgb(231,168,29)" rx="2" ry="2" />
+<text text-anchor="" x="876.83" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >uv__run_timers</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::base::RandomNumberGenerator::RandomNumberGenerator (1 samples, 0.48%)</title><rect x="1178.7" y="337" width="5.7" height="15.0" fill="rgb(235,136,29)" rx="2" ry="2" />
+<text text-anchor="" x="1181.71" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>emit events.js:117 (1 samples, 0.48%)</title><rect x="834.3" y="305" width="5.7" height="15.0" fill="rgb(228,190,0)" rx="2" ry="2" />
+<text text-anchor="" x="837.31" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Uint8ArrayConstructByLength native typedarray.js:76 (1 samples, 0.48%)</title><rect x="698.8" y="225" width="5.6" height="15.0" fill="rgb(216,164,31)" rx="2" ry="2" />
+<text text-anchor="" x="701.80" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnboundInternal (8 samples, 3.83%)</title><rect x="969.8" y="49" width="45.2" height="15.0" fill="rgb(212,9,49)" rx="2" ry="2" />
+<text text-anchor="" x="972.81" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v8::..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>initSocketHandle net.js:92 (1 samples, 0.48%)</title><rect x="1094.0" y="145" width="5.7" height="15.0" fill="rgb(223,114,38)" rx="2" ry="2" />
+<text text-anchor="" x="1097.02" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::FunctionTemplate::GetFunction (1 samples, 0.48%)</title><rect x="659.3" y="225" width="5.6" height="15.0" fill="rgb(221,166,0)" rx="2" ry="2" />
+<text text-anchor="" x="662.28" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Function:~ buffer.js:1 (8 samples, 3.83%)</title><rect x="681.9" y="289" width="45.1" height="15.0" fill="rgb(233,188,20)" rx="2" ry="2" />
+<text text-anchor="" x="684.87" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Func..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>join native array.js:333 (2 samples, 0.96%)</title><rect x="772.2" y="321" width="11.3" height="15.0" fill="rgb(205,154,14)" rx="2" ry="2" />
+<text text-anchor="" x="775.20" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>InstallFunctions native prologue.js:41 (1 samples, 0.48%)</title><rect x="1122.2" y="385" width="5.7" height="15.0" fill="rgb(207,5,35)" rx="2" ry="2" />
+<text text-anchor="" x="1125.25" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::ContextifyScript::New (2 samples, 0.96%)</title><rect x="642.3" y="225" width="11.3" height="15.0" fill="rgb(220,112,1)" rx="2" ry="2" />
+<text text-anchor="" x="645.34" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>DefineObjectProperty native v8natives.js:461 (1 samples, 0.48%)</title><rect x="585.9" y="289" width="5.6" height="15.0" fill="rgb(207,183,9)" rx="2" ry="2" />
+<text text-anchor="" x="588.89" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::ContextifyScript::New (2 samples, 0.96%)</title><rect x="461.7" y="193" width="11.3" height="15.0" fill="rgb(214,210,21)" rx="2" ry="2" />
+<text text-anchor="" x="464.67" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>posix.dirname path.js:529 (1 samples, 0.48%)</title><rect x="314.9" y="289" width="5.6" height="15.0" fill="rgb(219,201,38)" rx="2" ry="2" />
+<text text-anchor="" x="317.88" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.cache node.js:962 (1 samples, 0.48%)</title><rect x="597.2" y="257" width="5.6" height="15.0" fill="rgb(243,121,14)" rx="2" ry="2" />
+<text text-anchor="" x="600.18" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>native v8natives.js:1199 (9 samples, 4.31%)</title><rect x="879.5" y="273" width="50.8" height="15.0" fill="rgb(236,178,28)" rx="2" ry="2" />
+<text text-anchor="" x="882.47" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >nativ..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>create native v8natives.js:754 (3 samples, 1.44%)</title><rect x="580.2" y="337" width="17.0" height="15.0" fill="rgb(220,189,47)" rx="2" ry="2" />
+<text text-anchor="" x="583.24" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.cache node.js:962 (2 samples, 0.96%)</title><rect x="382.6" y="177" width="11.3" height="15.0" fill="rgb(247,82,46)" rx="2" ry="2" />
+<text text-anchor="" x="385.63" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>IN native runtime.js:352 (1 samples, 0.48%)</title><rect x="958.5" y="49" width="5.7" height="15.0" fill="rgb(212,68,41)" rx="2" ry="2" />
+<text text-anchor="" x="961.52" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnbound (9 samples, 4.31%)</title><rect x="484.3" y="225" width="50.8" height="15.0" fill="rgb(247,53,11)" rx="2" ry="2" />
+<text text-anchor="" x="487.26" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v8::S..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>createBuffer buffer.js:22 (2 samples, 0.96%)</title><rect x="693.2" y="257" width="11.2" height="15.0" fill="rgb(247,43,29)" rx="2" ry="2" />
+<text text-anchor="" x="696.16" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>match native string.js:118 (2 samples, 0.96%)</title><rect x="134.2" y="305" width="11.3" height="15.0" fill="rgb(220,120,43)" rx="2" ry="2" />
+<text text-anchor="" x="137.21" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>InnerArrayForEach native array.js:924 (1 samples, 0.48%)</title><rect x="478.6" y="225" width="5.7" height="15.0" fill="rgb(231,208,43)" rx="2" ry="2" />
+<text text-anchor="" x="481.61" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Function:~ _stream_writable.js:1 (1 samples, 0.48%)</title><rect x="410.9" y="161" width="5.6" height="15.0" fill="rgb(215,50,17)" rx="2" ry="2" />
+<text text-anchor="" x="413.86" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Module._load module.js:272 (25 samples, 11.96%)</title><rect x="185.0" y="321" width="141.2" height="15.0" fill="rgb(238,138,4)" rx="2" ry="2" />
+<text text-anchor="" x="188.02" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Module._load modu..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnboundInternal (5 samples, 2.39%)</title><rect x="727.0" y="241" width="28.3" height="15.0" fill="rgb(221,56,14)" rx="2" ry="2" />
+<text text-anchor="" x="730.03" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::LStat (3 samples, 1.44%)</title><rect x="224.5" y="225" width="17.0" height="15.0" fill="rgb(223,28,20)" rx="2" ry="2" />
+<text text-anchor="" x="227.55" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runInThisContext node.js:868 (1 samples, 0.48%)</title><rect x="1015.0" y="145" width="5.6" height="15.0" fill="rgb(222,26,5)" rx="2" ry="2" />
+<text text-anchor="" x="1017.98" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>emitTwo events.js:85 (1 samples, 0.48%)</title><rect x="834.3" y="289" width="5.7" height="15.0" fill="rgb(207,109,13)" rx="2" ry="2" />
+<text text-anchor="" x="837.31" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::ContextifyScript::New (3 samples, 1.44%)</title><rect x="664.9" y="273" width="17.0" height="15.0" fill="rgb(233,182,1)" rx="2" ry="2" />
+<text text-anchor="" x="667.93" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Buffer.toString buffer.js:378 (2 samples, 0.96%)</title><rect x="297.9" y="257" width="11.3" height="15.0" fill="rgb(216,49,0)" rx="2" ry="2" />
+<text text-anchor="" x="300.94" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>EventEmitter.init events.js:23 (1 samples, 0.48%)</title><rect x="1082.7" y="81" width="5.7" height="15.0" fill="rgb(225,100,20)" rx="2" ry="2" />
+<text text-anchor="" x="1085.73" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>startup.processConfig node.js:253 (12 samples, 5.74%)</title><rect x="755.3" y="337" width="67.7" height="15.0" fill="rgb(232,24,28)" rx="2" ry="2" />
+<text text-anchor="" x="758.26" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >startup..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::LoadEnvironment (136 samples, 65.07%)</title><rect x="106.0" y="417" width="767.8" height="15.0" fill="rgb(237,157,9)" rx="2" ry="2" />
+<text text-anchor="" x="108.98" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >node::LoadEnvironment</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node (209 samples, 100.00%)</title><rect x="10.0" y="449" width="1180.0" height="15.0" fill="rgb(251,103,6)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >node</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Buffer buffer.js:47 (3 samples, 1.44%)</title><rect x="281.0" y="257" width="16.9" height="15.0" fill="rgb(244,51,49)" rx="2" ry="2" />
+<text text-anchor="" x="284.00" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>DoConstructRegExp native regexp.js:17 (1 samples, 0.48%)</title><rect x="128.6" y="289" width="5.6" height="15.0" fill="rgb(243,175,39)" rx="2" ry="2" />
+<text text-anchor="" x="131.56" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.require node.js:883 (1 samples, 0.48%)</title><rect x="681.9" y="273" width="5.6" height="15.0" fill="rgb(225,119,28)" rx="2" ry="2" />
+<text text-anchor="" x="684.87" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::Isolate::New (8 samples, 3.83%)</title><rect x="1133.5" y="417" width="45.2" height="15.0" fill="rgb(232,190,51)" rx="2" ry="2" />
+<text text-anchor="" x="1136.54" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v8::..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.require node.js:883 (32 samples, 15.31%)</title><rect x="354.4" y="289" width="180.7" height="15.0" fill="rgb(247,162,32)" rx="2" ry="2" />
+<text text-anchor="" x="357.40" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >NativeModule.require no..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Module._extensions..js module.js:415 (12 samples, 5.74%)</title><rect x="247.1" y="289" width="67.8" height="15.0" fill="rgb(209,4,32)" rx="2" ry="2" />
+<text text-anchor="" x="250.13" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Module...</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>virtual thunk to std::basic_ostringstreamchar, std::char_traitschar, std::allocatorchar ::~basic_ostringstream (1 samples, 0.48%)</title><rect x="1184.4" y="433" width="5.6" height="15.0" fill="rgb(239,190,38)" rx="2" ry="2" />
+<text text-anchor="" x="1187.35" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>slice buffer.js:613 (2 samples, 0.96%)</title><rect x="286.7" y="225" width="11.2" height="15.0" fill="rgb(215,228,31)" rx="2" ry="2" />
+<text text-anchor="" x="289.65" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>exports.debuglog util.js:60 (1 samples, 0.48%)</title><rect x="653.6" y="273" width="5.7" height="15.0" fill="rgb(240,38,9)" rx="2" ry="2" />
+<text text-anchor="" x="656.64" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>malloc (1 samples, 0.48%)</title><rect x="89.0" y="433" width="5.7" height="15.0" fill="rgb(218,150,30)" rx="2" ry="2" />
+<text text-anchor="" x="92.04" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::FunctionTemplate::GetFunction (1 samples, 0.48%)</title><rect x="659.3" y="241" width="5.6" height="15.0" fill="rgb(236,57,4)" rx="2" ry="2" />
+<text text-anchor="" x="662.28" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>defineProperty native v8natives.js:763 (2 samples, 0.96%)</title><rect x="704.4" y="273" width="11.3" height="15.0" fill="rgb(233,18,42)" rx="2" ry="2" />
+<text text-anchor="" x="707.45" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnboundInternal (2 samples, 0.96%)</title><rect x="642.3" y="193" width="11.3" height="15.0" fill="rgb(254,15,16)" rx="2" ry="2" />
+<text text-anchor="" x="645.34" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>toRealPath module.js:111 (7 samples, 3.35%)</title><rect x="207.6" y="273" width="39.5" height="15.0" fill="rgb(253,107,34)" rx="2" ry="2" />
+<text text-anchor="" x="210.61" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >toR..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::Function::NewInstance (3 samples, 1.44%)</title><rect x="224.5" y="177" width="17.0" height="15.0" fill="rgb(207,169,27)" rx="2" ry="2" />
+<text text-anchor="" x="227.55" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Function:~ console.js:1 (30 samples, 14.35%)</title><rect x="930.3" y="225" width="169.4" height="15.0" fill="rgb(217,45,50)" rx="2" ry="2" />
+<text text-anchor="" x="933.29" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Function:~ console.js:1</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>fs.Stats fs.js:105 (3 samples, 1.44%)</title><rect x="224.5" y="161" width="17.0" height="15.0" fill="rgb(225,67,22)" rx="2" ry="2" />
+<text text-anchor="" x="227.55" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_lookup_x (1 samples, 0.48%)</title><rect x="83.4" y="433" width="5.6" height="15.0" fill="rgb(217,125,44)" rx="2" ry="2" />
+<text text-anchor="" x="86.40" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::Buffer::SetupBufferJS (1 samples, 0.48%)</title><rect x="721.4" y="273" width="5.6" height="15.0" fill="rgb(227,141,51)" rx="2" ry="2" />
+<text text-anchor="" x="724.39" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>DELETE native runtime.js:349 (1 samples, 0.48%)</title><rect x="766.6" y="321" width="5.6" height="15.0" fill="rgb(238,126,10)" rx="2" ry="2" />
+<text text-anchor="" x="769.56" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Revive native json.js:16 (7 samples, 3.35%)</title><rect x="783.5" y="305" width="39.5" height="15.0" fill="rgb(225,7,9)" rx="2" ry="2" />
+<text text-anchor="" x="786.49" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Rev..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>all (209 samples, 100%)</title><rect x="10.0" y="465" width="1180.0" height="15.0" fill="rgb(217,35,20)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parse native json.js:40 (7 samples, 3.35%)</title><rect x="783.5" y="321" width="39.5" height="15.0" fill="rgb(228,140,39)" rx="2" ry="2" />
+<text text-anchor="" x="786.49" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >par..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::AsyncWrap::MakeCallback (41 samples, 19.62%)</title><rect x="873.8" y="369" width="231.5" height="15.0" fill="rgb(220,116,31)" rx="2" ry="2" />
+<text text-anchor="" x="876.83" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >node::AsyncWrap::MakeCallback</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_tickCallback node.js:335 (1 samples, 0.48%)</title><rect x="326.2" y="321" width="5.6" height="15.0" fill="rgb(249,61,26)" rx="2" ry="2" />
+<text text-anchor="" x="329.17" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Join native array.js:102 (1 samples, 0.48%)</title><rect x="777.8" y="289" width="5.7" height="15.0" fill="rgb(228,4,30)" rx="2" ry="2" />
+<text text-anchor="" x="780.85" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Readable.on _stream_readable.js:664 (1 samples, 0.48%)</title><rect x="1048.9" y="113" width="5.6" height="15.0" fill="rgb(231,183,21)" rx="2" ry="2" />
+<text text-anchor="" x="1051.85" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.compile node.js:949 (30 samples, 14.35%)</title><rect x="365.7" y="273" width="169.4" height="15.0" fill="rgb(251,103,35)" rx="2" ry="2" />
+<text text-anchor="" x="368.69" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >NativeModule.compile ..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sha1_block_data_order (1 samples, 0.48%)</title><rect x="1178.7" y="257" width="5.7" height="15.0" fill="rgb(214,104,19)" rx="2" ry="2" />
+<text text-anchor="" x="1181.71" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Socket net.js:109 (5 samples, 2.39%)</title><rect x="1071.4" y="161" width="28.3" height="15.0" fill="rgb(211,86,27)" rx="2" ry="2" />
+<text text-anchor="" x="1074.44" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >S..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_IO_file_xsputn@@GLIBC_2.2.5 (1 samples, 0.48%)</title><rect x="15.6" y="433" width="5.7" height="15.0" fill="rgb(205,177,22)" rx="2" ry="2" />
+<text text-anchor="" x="18.65" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::BuildStatsObject (3 samples, 1.44%)</title><rect x="224.5" y="209" width="17.0" height="15.0" fill="rgb(223,68,26)" rx="2" ry="2" />
+<text text-anchor="" x="227.55" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>DefineOwnProperty native v8natives.js:630 (1 samples, 0.48%)</title><rect x="710.1" y="257" width="5.6" height="15.0" fill="rgb(236,13,50)" rx="2" ry="2" />
+<text text-anchor="" x="713.10" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runInThisContext node.js:868 (1 samples, 0.48%)</title><rect x="681.9" y="241" width="5.6" height="15.0" fill="rgb(237,170,40)" rx="2" ry="2" />
+<text text-anchor="" x="684.87" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnboundInternal (1 samples, 0.48%)</title><rect x="1015.0" y="97" width="5.6" height="15.0" fill="rgb(216,154,50)" rx="2" ry="2" />
+<text text-anchor="" x="1017.98" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runInThisContext node.js:868 (8 samples, 3.83%)</title><rect x="535.1" y="305" width="45.1" height="15.0" fill="rgb(229,73,30)" rx="2" ry="2" />
+<text text-anchor="" x="538.07" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >runI..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::Binding (1 samples, 0.48%)</title><rect x="614.1" y="177" width="5.7" height="15.0" fill="rgb(238,132,21)" rx="2" ry="2" />
+<text text-anchor="" x="617.11" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::Binding (1 samples, 0.48%)</title><rect x="377.0" y="193" width="5.6" height="15.0" fill="rgb(227,140,23)" rx="2" ry="2" />
+<text text-anchor="" x="379.99" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Readable _stream_readable.js:80 (1 samples, 0.48%)</title><rect x="1037.6" y="129" width="5.6" height="15.0" fill="rgb(243,153,44)" rx="2" ry="2" />
+<text text-anchor="" x="1040.56" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::base::OS::GetRandomMmapAddr (1 samples, 0.48%)</title><rect x="1178.7" y="369" width="5.7" height="15.0" fill="rgb(213,95,39)" rx="2" ry="2" />
+<text text-anchor="" x="1181.71" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Readable _stream_readable.js:80 (1 samples, 0.48%)</title><rect x="1077.1" y="129" width="5.6" height="15.0" fill="rgb(216,19,16)" rx="2" ry="2" />
+<text text-anchor="" x="1080.08" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>RAND_poll (1 samples, 0.48%)</title><rect x="1178.7" y="289" width="5.7" height="15.0" fill="rgb(238,205,15)" rx="2" ry="2" />
+<text text-anchor="" x="1181.71" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::Object::Set (1 samples, 0.48%)</title><rect x="614.1" y="145" width="5.7" height="15.0" fill="rgb(209,84,41)" rx="2" ry="2" />
+<text text-anchor="" x="617.11" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>exec native regexp.js:85 (1 samples, 0.48%)</title><rect x="314.9" y="257" width="5.6" height="15.0" fill="rgb(216,88,9)" rx="2" ry="2" />
+<text text-anchor="" x="317.88" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnbound (5 samples, 2.39%)</title><rect x="727.0" y="257" width="28.3" height="15.0" fill="rgb(230,221,23)" rx="2" ry="2" />
+<text text-anchor="" x="730.03" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::Start (192 samples, 91.87%)</title><rect x="100.3" y="433" width="1084.1" height="15.0" fill="rgb(224,199,43)" rx="2" ry="2" />
+<text text-anchor="" x="103.33" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >node::Start</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::base::OS::Allocate (1 samples, 0.48%)</title><rect x="1178.7" y="385" width="5.7" height="15.0" fill="rgb(233,199,14)" rx="2" ry="2" />
+<text text-anchor="" x="1181.71" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>once events.js:249 (1 samples, 0.48%)</title><rect x="1048.9" y="129" width="5.6" height="15.0" fill="rgb(208,190,49)" rx="2" ry="2" />
+<text text-anchor="" x="1051.85" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CallIC:A call IC from the snapshot (1 samples, 0.48%)</title><rect x="958.5" y="33" width="5.7" height="15.0" fill="rgb(213,192,15)" rx="2" ry="2" />
+<text text-anchor="" x="961.52" y="43.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::Binding (1 samples, 0.48%)</title><rect x="1054.5" y="177" width="5.6" height="15.0" fill="rgb(218,90,46)" rx="2" ry="2" />
+<text text-anchor="" x="1057.50" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.cache node.js:962 (1 samples, 0.48%)</title><rect x="337.5" y="321" width="5.6" height="15.0" fill="rgb(239,166,11)" rx="2" ry="2" />
+<text text-anchor="" x="340.46" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node.js:915 (3 samples, 1.44%)</title><rect x="128.6" y="321" width="16.9" height="15.0" fill="rgb(217,19,1)" rx="2" ry="2" />
+<text text-anchor="" x="131.56" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runInThisContext node.js:868 (2 samples, 0.96%)</title><rect x="642.3" y="241" width="11.3" height="15.0" fill="rgb(213,64,7)" rx="2" ry="2" />
+<text text-anchor="" x="645.34" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnbound (8 samples, 3.83%)</title><rect x="969.8" y="65" width="45.2" height="15.0" fill="rgb(252,77,45)" rx="2" ry="2" />
+<text text-anchor="" x="972.81" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v8::..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>WriteStream tty.js:54 (6 samples, 2.87%)</title><rect x="1065.8" y="177" width="33.9" height="15.0" fill="rgb(235,181,22)" rx="2" ry="2" />
+<text text-anchor="" x="1068.79" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Wr..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Revive native json.js:16 (4 samples, 1.91%)</title><rect x="800.4" y="273" width="22.6" height="15.0" fill="rgb(210,191,16)" rx="2" ry="2" />
+<text text-anchor="" x="803.43" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >R..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Writable.write _stream_writable.js:186 (8 samples, 3.83%)</title><rect x="885.1" y="225" width="45.2" height="15.0" fill="rgb(233,125,16)" rx="2" ry="2" />
+<text text-anchor="" x="888.12" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Writ..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>wrapper timers.js:274 (40 samples, 19.14%)</title><rect x="879.5" y="305" width="225.8" height="15.0" fill="rgb(250,20,16)" rx="2" ry="2" />
+<text text-anchor="" x="882.47" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >wrapper timers.js:274</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>uv_run (41 samples, 19.62%)</title><rect x="873.8" y="417" width="231.5" height="15.0" fill="rgb(205,66,1)" rx="2" ry="2" />
+<text text-anchor="" x="876.83" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >uv_run</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::base::RecursiveMutex::Lock (1 samples, 0.48%)</title><rect x="320.5" y="289" width="5.7" height="15.0" fill="rgb(211,41,8)" rx="2" ry="2" />
+<text text-anchor="" x="323.53" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Function:~ node.js:10 (131 samples, 62.68%)</title><rect x="106.0" y="369" width="739.6" height="15.0" fill="rgb(229,225,17)" rx="2" ry="2" />
+<text text-anchor="" x="108.98" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Function:~ node.js:10</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnbound (3 samples, 1.44%)</title><rect x="664.9" y="257" width="17.0" height="15.0" fill="rgb(212,117,33)" rx="2" ry="2" />
+<text text-anchor="" x="667.93" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::Object::Set (1 samples, 0.48%)</title><rect x="100.3" y="385" width="5.7" height="15.0" fill="rgb(221,181,31)" rx="2" ry="2" />
+<text text-anchor="" x="103.33" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_IO_vsnprintf (2 samples, 0.96%)</title><rect x="26.9" y="433" width="11.3" height="15.0" fill="rgb(229,92,12)" rx="2" ry="2" />
+<text text-anchor="" x="29.94" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::SetupProcessObject (1 samples, 0.48%)</title><rect x="100.3" y="401" width="5.7" height="15.0" fill="rgb(217,124,14)" rx="2" ry="2" />
+<text text-anchor="" x="103.33" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_dl_relocate_object (1 samples, 0.48%)</title><rect x="49.5" y="401" width="5.7" height="15.0" fill="rgb(207,115,24)" rx="2" ry="2" />
+<text text-anchor="" x="52.52" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ReadableState _stream_readable.js:15 (1 samples, 0.48%)</title><rect x="1037.6" y="113" width="5.6" height="15.0" fill="rgb(223,220,52)" rx="2" ry="2" />
+<text text-anchor="" x="1040.56" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::FunctionTemplate::GetFunction (1 samples, 0.48%)</title><rect x="964.2" y="33" width="5.6" height="15.0" fill="rgb(228,129,1)" rx="2" ry="2" />
+<text text-anchor="" x="967.16" y="43.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>fs.openSync fs.js:546 (1 samples, 0.48%)</title><rect x="309.2" y="257" width="5.7" height="15.0" fill="rgb(233,143,50)" rx="2" ry="2" />
+<text text-anchor="" x="312.23" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Console console.js:5 (3 samples, 1.44%)</title><rect x="935.9" y="209" width="17.0" height="15.0" fill="rgb(254,100,22)" rx="2" ry="2" />
+<text text-anchor="" x="938.93" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Writable _stream_writable.js:130 (2 samples, 0.96%)</title><rect x="1082.7" y="129" width="11.3" height="15.0" fill="rgb(210,166,28)" rx="2" ry="2" />
+<text text-anchor="" x="1085.73" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node.js:199 (31 samples, 14.83%)</title><rect x="930.3" y="273" width="175.0" height="15.0" fill="rgb(221,199,22)" rx="2" ry="2" />
+<text text-anchor="" x="933.29" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >node.js:199</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>allocate buffer.js:81 (2 samples, 0.96%)</title><rect x="286.7" y="241" width="11.2" height="15.0" fill="rgb(224,155,19)" rx="2" ry="2" />
+<text text-anchor="" x="289.65" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runInThisContext node.js:868 (9 samples, 4.31%)</title><rect x="484.3" y="257" width="50.8" height="15.0" fill="rgb(244,181,30)" rx="2" ry="2" />
+<text text-anchor="" x="487.26" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >runIn..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_dl_name_match_p (1 samples, 0.48%)</title><rect x="43.9" y="433" width="5.6" height="15.0" fill="rgb(227,144,46)" rx="2" ry="2" />
+<text text-anchor="" x="46.88" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>EventEmitter events.js:5 (1 samples, 0.48%)</title><rect x="173.7" y="337" width="5.7" height="15.0" fill="rgb(213,143,31)" rx="2" ry="2" />
+<text text-anchor="" x="176.73" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Module._findPath module.js:128 (8 samples, 3.83%)</title><rect x="202.0" y="289" width="45.1" height="15.0" fill="rgb(241,23,28)" rx="2" ry="2" />
+<text text-anchor="" x="204.96" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Modu..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::TTYWrap::Initialize (1 samples, 0.48%)</title><rect x="1054.5" y="161" width="5.6" height="15.0" fill="rgb(239,157,18)" rx="2" ry="2" />
+<text text-anchor="" x="1057.50" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.require node.js:883 (14 samples, 6.70%)</title><rect x="382.6" y="193" width="79.1" height="15.0" fill="rgb(221,5,14)" rx="2" ry="2" />
+<text text-anchor="" x="385.63" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >NativeMod..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.require node.js:883 (11 samples, 5.26%)</title><rect x="958.5" y="177" width="62.1" height="15.0" fill="rgb(220,6,25)" rx="2" ry="2" />
+<text text-anchor="" x="961.52" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Native..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnbound (7 samples, 3.35%)</title><rect x="540.7" y="273" width="39.5" height="15.0" fill="rgb(210,136,21)" rx="2" ry="2" />
+<text text-anchor="" x="543.72" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v8:..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::ContextifyScript::New (5 samples, 2.39%)</title><rect x="727.0" y="273" width="28.3" height="15.0" fill="rgb(243,58,51)" rx="2" ry="2" />
+<text text-anchor="" x="730.03" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >n..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::crypto::EntropySource (1 samples, 0.48%)</title><rect x="1178.7" y="321" width="5.7" height="15.0" fill="rgb(251,147,23)" rx="2" ry="2" />
+<text text-anchor="" x="1181.71" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runInThisContext node.js:868 (1 samples, 0.48%)</title><rect x="1099.7" y="225" width="5.6" height="15.0" fill="rgb(210,77,6)" rx="2" ry="2" />
+<text text-anchor="" x="1102.67" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Socket._write net.js:693 (4 samples, 1.91%)</title><rect x="907.7" y="177" width="22.6" height="15.0" fill="rgb(229,61,10)" rx="2" ry="2" />
+<text text-anchor="" x="910.70" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >S..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Function:~ timers.js:1 (12 samples, 5.74%)</title><rect x="597.2" y="289" width="67.7" height="15.0" fill="rgb(215,58,25)" rx="2" ry="2" />
+<text text-anchor="" x="600.18" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Functio..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.compile node.js:949 (11 samples, 5.26%)</title><rect x="958.5" y="161" width="62.1" height="15.0" fill="rgb(226,185,33)" rx="2" ry="2" />
+<text text-anchor="" x="961.52" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Native..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>WritableState _stream_writable.js:26 (1 samples, 0.48%)</title><rect x="1088.4" y="113" width="5.6" height="15.0" fill="rgb(225,0,24)" rx="2" ry="2" />
+<text text-anchor="" x="1091.37" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>vfprintf (1 samples, 0.48%)</title><rect x="32.6" y="417" width="5.6" height="15.0" fill="rgb(243,203,30)" rx="2" ry="2" />
+<text text-anchor="" x="35.58" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::Object::Set (1 samples, 0.48%)</title><rect x="100.3" y="369" width="5.7" height="15.0" fill="rgb(235,225,29)" rx="2" ry="2" />
+<text text-anchor="" x="103.33" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node.js:644 (7 samples, 3.35%)</title><rect x="1060.1" y="209" width="39.6" height="15.0" fill="rgb(223,191,29)" rx="2" ry="2" />
+<text text-anchor="" x="1063.14" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >nod..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Stream stream.js:22 (1 samples, 0.48%)</title><rect x="1082.7" y="113" width="5.7" height="15.0" fill="rgb(229,147,42)" rx="2" ry="2" />
+<text text-anchor="" x="1085.73" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::base::CallOnceImpl (1 samples, 0.48%)</title><rect x="1178.7" y="353" width="5.7" height="15.0" fill="rgb(223,48,17)" rx="2" ry="2" />
+<text text-anchor="" x="1181.71" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.compile node.js:949 (9 samples, 4.31%)</title><rect x="602.8" y="257" width="50.8" height="15.0" fill="rgb(254,151,43)" rx="2" ry="2" />
+<text text-anchor="" x="605.82" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Nativ..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Module._compile module.js:367 (4 samples, 1.91%)</title><rect x="258.4" y="273" width="22.6" height="15.0" fill="rgb(209,51,22)" rx="2" ry="2" />
+<text text-anchor="" x="261.42" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >M..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>addListener events.js:191 (1 samples, 0.48%)</title><rect x="1048.9" y="97" width="5.6" height="15.0" fill="rgb(229,186,31)" rx="2" ry="2" />
+<text text-anchor="" x="1051.85" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>subarray native typedarray.js:165 (2 samples, 0.96%)</title><rect x="286.7" y="209" width="11.2" height="15.0" fill="rgb(206,221,24)" rx="2" ry="2" />
+<text text-anchor="" x="289.65" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>defineProperty native v8natives.js:763 (1 samples, 0.48%)</title><rect x="478.6" y="193" width="5.7" height="15.0" fill="rgb(239,208,24)" rx="2" ry="2" />
+<text text-anchor="" x="481.61" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>operator delete (1 samples, 0.48%)</title><rect x="235.8" y="145" width="5.7" height="15.0" fill="rgb(236,128,37)" rx="2" ry="2" />
+<text text-anchor="" x="238.84" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_ZTv0_n24_NSoD0Ev@plt (1 samples, 0.48%)</title><rect x="38.2" y="433" width="5.7" height="15.0" fill="rgb(229,179,50)" rx="2" ry="2" />
+<text text-anchor="" x="41.23" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::V8::Initialize (1 samples, 0.48%)</title><rect x="1178.7" y="417" width="5.7" height="15.0" fill="rgb(229,62,19)" rx="2" ry="2" />
+<text text-anchor="" x="1181.71" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::ContextifyScript::New (1 samples, 0.48%)</title><rect x="1099.7" y="209" width="5.6" height="15.0" fill="rgb(218,96,0)" rx="2" ry="2" />
+<text text-anchor="" x="1102.67" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnbound (2 samples, 0.96%)</title><rect x="461.7" y="177" width="11.3" height="15.0" fill="rgb(248,202,17)" rx="2" ry="2" />
+<text text-anchor="" x="464.67" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>malloc (1 samples, 0.48%)</title><rect x="1094.0" y="129" width="5.7" height="15.0" fill="rgb(240,111,26)" rx="2" ry="2" />
+<text text-anchor="" x="1097.02" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>DefineOwnProperty native v8natives.js:630 (2 samples, 0.96%)</title><rect x="580.2" y="305" width="11.3" height="15.0" fill="rgb(245,64,41)" rx="2" ry="2" />
+<text text-anchor="" x="583.24" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnbound (2 samples, 0.96%)</title><rect x="642.3" y="209" width="11.3" height="15.0" fill="rgb(246,64,25)" rx="2" ry="2" />
+<text text-anchor="" x="645.34" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>startup.processSignalHandlers node.js:783 (3 samples, 1.44%)</title><rect x="823.0" y="337" width="17.0" height="15.0" fill="rgb(221,208,49)" rx="2" ry="2" />
+<text text-anchor="" x="826.01" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.compile node.js:949 (15 samples, 7.18%)</title><rect x="597.2" y="305" width="84.7" height="15.0" fill="rgb(249,56,51)" rx="2" ry="2" />
+<text text-anchor="" x="600.18" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >NativeMod..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::base::OS::FPrint (2 samples, 0.96%)</title><rect x="382.6" y="161" width="11.3" height="15.0" fill="rgb(247,15,29)" rx="2" ry="2" />
+<text text-anchor="" x="385.63" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnboundInternal (2 samples, 0.96%)</title><rect x="461.7" y="161" width="11.3" height="15.0" fill="rgb(224,66,31)" rx="2" ry="2" />
+<text text-anchor="" x="464.67" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.compile node.js:949 (31 samples, 14.83%)</title><rect x="930.3" y="241" width="175.0" height="15.0" fill="rgb(229,144,24)" rx="2" ry="2" />
+<text text-anchor="" x="933.29" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >NativeModule.compile n..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_IO_default_xsputn (1 samples, 0.48%)</title><rect x="26.9" y="417" width="5.7" height="15.0" fill="rgb(238,218,3)" rx="2" ry="2" />
+<text text-anchor="" x="29.94" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_int_free (1 samples, 0.48%)</title><rect x="55.2" y="433" width="5.6" height="15.0" fill="rgb(239,127,21)" rx="2" ry="2" />
+<text text-anchor="" x="58.17" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.require node.js:883 (10 samples, 4.78%)</title><rect x="597.2" y="273" width="56.4" height="15.0" fill="rgb(231,53,14)" rx="2" ry="2" />
+<text text-anchor="" x="600.18" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Nativ..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::Object::Set (1 samples, 0.48%)</title><rect x="614.1" y="161" width="5.7" height="15.0" fill="rgb(243,184,6)" rx="2" ry="2" />
+<text text-anchor="" x="617.11" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Socket.write net.js:615 (8 samples, 3.83%)</title><rect x="885.1" y="241" width="45.2" height="15.0" fill="rgb(254,188,53)" rx="2" ry="2" />
+<text text-anchor="" x="888.12" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Sock..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::Script::Compile (5 samples, 2.39%)</title><rect x="845.6" y="401" width="28.2" height="15.0" fill="rgb(236,217,5)" rx="2" ry="2" />
+<text text-anchor="" x="848.60" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ToPropertyDescriptor native v8natives.js:234 (1 samples, 0.48%)</title><rect x="478.6" y="177" width="5.7" height="15.0" fill="rgb(223,167,30)" rx="2" ry="2" />
+<text text-anchor="" x="481.61" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.cache node.js:962 (2 samples, 0.96%)</title><rect x="354.4" y="273" width="11.3" height="15.0" fill="rgb(231,150,17)" rx="2" ry="2" />
+<text text-anchor="" x="357.40" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Function:~ /home/ubuntu/test/test.js:1 (3 samples, 1.44%)</title><rect x="264.1" y="257" width="16.9" height="15.0" fill="rgb(246,82,4)" rx="2" ry="2" />
+<text text-anchor="" x="267.07" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::Context::New (5 samples, 2.39%)</title><rect x="1105.3" y="417" width="28.2" height="15.0" fill="rgb(236,16,21)" rx="2" ry="2" />
+<text text-anchor="" x="1108.31" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>exports.inherits util.js:745 (1 samples, 0.48%)</title><rect x="410.9" y="145" width="5.6" height="15.0" fill="rgb(235,6,18)" rx="2" ry="2" />
+<text text-anchor="" x="413.86" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>RegExp native regexp.js:33 (1 samples, 0.48%)</title><rect x="128.6" y="305" width="5.6" height="15.0" fill="rgb(227,136,7)" rx="2" ry="2" />
+<text text-anchor="" x="131.56" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::Function::Call (131 samples, 62.68%)</title><rect x="106.0" y="401" width="739.6" height="15.0" fill="rgb(207,206,22)" rx="2" ry="2" />
+<text text-anchor="" x="108.98" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v8::Function::Call</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>startup node.js:13 (124 samples, 59.33%)</title><rect x="145.5" y="353" width="700.1" height="15.0" fill="rgb(239,15,42)" rx="2" ry="2" />
+<text text-anchor="" x="148.50" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >startup node.js:13</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnbound (1 samples, 0.48%)</title><rect x="681.9" y="209" width="5.6" height="15.0" fill="rgb(214,94,41)" rx="2" ry="2" />
+<text text-anchor="" x="684.87" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>startup.globalVariables node.js:178 (13 samples, 6.22%)</title><rect x="681.9" y="337" width="73.4" height="15.0" fill="rgb(250,50,4)" rx="2" ry="2" />
+<text text-anchor="" x="684.87" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >startup...</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::Compile (5 samples, 2.39%)</title><rect x="845.6" y="369" width="28.2" height="15.0" fill="rgb(230,170,40)" rx="2" ry="2" />
+<text text-anchor="" x="848.60" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.require node.js:883 (13 samples, 6.22%)</title><rect x="681.9" y="321" width="73.4" height="15.0" fill="rgb(215,135,40)" rx="2" ry="2" />
+<text text-anchor="" x="684.87" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >NativeMo..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.require node.js:883 (10 samples, 4.78%)</title><rect x="958.5" y="129" width="56.5" height="15.0" fill="rgb(223,140,32)" rx="2" ry="2" />
+<text text-anchor="" x="961.52" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Nativ..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>exports.inherits util.js:745 (1 samples, 0.48%)</title><rect x="405.2" y="145" width="5.7" height="15.0" fill="rgb(252,229,21)" rx="2" ry="2" />
+<text text-anchor="" x="408.22" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_IO_no_init (1 samples, 0.48%)</title><rect x="21.3" y="433" width="5.6" height="15.0" fill="rgb(224,169,25)" rx="2" ry="2" />
+<text text-anchor="" x="24.29" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.compile node.js:949 (42 samples, 20.10%)</title><rect x="343.1" y="321" width="237.1" height="15.0" fill="rgb(208,176,3)" rx="2" ry="2" />
+<text text-anchor="" x="346.11" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >NativeModule.compile node.js:949</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::ContextifyScript::New (4 samples, 1.91%)</title><rect x="619.8" y="177" width="22.5" height="15.0" fill="rgb(216,13,4)" rx="2" ry="2" />
+<text text-anchor="" x="622.76" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >n..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>start fs.js:1406 (1 samples, 0.48%)</title><rect x="241.5" y="241" width="5.6" height="15.0" fill="rgb(230,209,34)" rx="2" ry="2" />
+<text text-anchor="" x="244.48" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::base::CallOnceImpl (1 samples, 0.48%)</title><rect x="1178.7" y="401" width="5.7" height="15.0" fill="rgb(238,213,18)" rx="2" ry="2" />
+<text text-anchor="" x="1181.71" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__dynamic_cast (1 samples, 0.48%)</title><rect x="1184.4" y="417" width="5.6" height="15.0" fill="rgb(219,23,36)" rx="2" ry="2" />
+<text text-anchor="" x="1187.35" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::Binding (1 samples, 0.48%)</title><rect x="659.3" y="273" width="5.6" height="15.0" fill="rgb(237,219,0)" rx="2" ry="2" />
+<text text-anchor="" x="662.28" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Module.runMain module.js:440 (27 samples, 12.92%)</title><rect x="179.4" y="337" width="152.4" height="15.0" fill="rgb(237,52,5)" rx="2" ry="2" />
+<text text-anchor="" x="182.38" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Module.runMain modu..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runInThisContext node.js:868 (5 samples, 2.39%)</title><rect x="727.0" y="289" width="28.3" height="15.0" fill="rgb(242,156,12)" rx="2" ry="2" />
+<text text-anchor="" x="730.03" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >r..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::TCPWrap::Initialize (1 samples, 0.48%)</title><rect x="964.2" y="65" width="5.6" height="15.0" fill="rgb(233,44,24)" rx="2" ry="2" />
+<text text-anchor="" x="967.16" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__memmove_ssse3_back (1 samples, 0.48%)</title><rect x="314.9" y="241" width="5.6" height="15.0" fill="rgb(212,29,32)" rx="2" ry="2" />
+<text text-anchor="" x="317.88" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>createWritableStdioStream node.js:583 (19 samples, 9.09%)</title><rect x="952.9" y="193" width="107.2" height="15.0" fill="rgb(233,149,30)" rx="2" ry="2" />
+<text text-anchor="" x="955.87" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >createWritabl..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnboundInternal (8 samples, 3.83%)</title><rect x="416.5" y="113" width="45.2" height="15.0" fill="rgb(251,121,38)" rx="2" ry="2" />
+<text text-anchor="" x="419.51" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v8::..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::FunctionTemplate::GetFunction (1 samples, 0.48%)</title><rect x="1054.5" y="145" width="5.6" height="15.0" fill="rgb(252,166,7)" rx="2" ry="2" />
+<text text-anchor="" x="1057.50" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Function:~ assert.js:1 (7 samples, 3.35%)</title><rect x="602.8" y="241" width="39.5" height="15.0" fill="rgb(229,28,14)" rx="2" ry="2" />
+<text text-anchor="" x="605.82" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Fun..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnboundInternal (1 samples, 0.48%)</title><rect x="1099.7" y="177" width="5.6" height="15.0" fill="rgb(222,67,1)" rx="2" ry="2" />
+<text text-anchor="" x="1102.67" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/home/ubuntu/test/test.js:1 (40 samples, 19.14%)</title><rect x="879.5" y="289" width="225.8" height="15.0" fill="rgb(252,142,4)" rx="2" ry="2" />
+<text text-anchor="" x="882.47" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/home/ubuntu/test/test.js:1</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>addListener events.js:191 (2 samples, 0.96%)</title><rect x="828.7" y="321" width="11.3" height="15.0" fill="rgb(210,219,2)" rx="2" ry="2" />
+<text text-anchor="" x="831.66" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Module._resolveFilename module.js:312 (10 samples, 4.78%)</title><rect x="190.7" y="305" width="56.4" height="15.0" fill="rgb(222,169,20)" rx="2" ry="2" />
+<text text-anchor="" x="193.67" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Modul..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnboundInternal (5 samples, 2.39%)</title><rect x="845.6" y="353" width="28.2" height="15.0" fill="rgb(215,47,52)" rx="2" ry="2" />
+<text text-anchor="" x="848.60" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.require node.js:883 (31 samples, 14.83%)</title><rect x="930.3" y="257" width="175.0" height="15.0" fill="rgb(249,164,26)" rx="2" ry="2" />
+<text text-anchor="" x="933.29" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >NativeModule.require n..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>exports.setInterval timers.js:234 (2 samples, 0.96%)</title><rect x="269.7" y="241" width="11.3" height="15.0" fill="rgb(253,16,19)" rx="2" ry="2" />
+<text text-anchor="" x="272.71" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>posixSplitPath path.js:410 (1 samples, 0.48%)</title><rect x="314.9" y="273" width="5.6" height="15.0" fill="rgb(210,199,35)" rx="2" ry="2" />
+<text text-anchor="" x="317.88" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::Object::Set (1 samples, 0.48%)</title><rect x="117.3" y="321" width="5.6" height="15.0" fill="rgb(220,66,49)" rx="2" ry="2" />
+<text text-anchor="" x="120.27" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>InnerArraySome native array.js:949 (4 samples, 1.91%)</title><rect x="122.9" y="337" width="22.6" height="15.0" fill="rgb(207,213,12)" rx="2" ry="2" />
+<text text-anchor="" x="125.92" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >I..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>EventEmitter events.js:5 (1 samples, 0.48%)</title><rect x="1082.7" y="97" width="5.7" height="15.0" fill="rgb(242,99,34)" rx="2" ry="2" />
+<text text-anchor="" x="1085.73" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>fs.readFileSync fs.js:384 (6 samples, 2.87%)</title><rect x="281.0" y="273" width="33.9" height="15.0" fill="rgb(243,147,30)" rx="2" ry="2" />
+<text text-anchor="" x="284.00" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >fs..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.compile node.js:949 (12 samples, 5.74%)</title><rect x="393.9" y="177" width="67.8" height="15.0" fill="rgb(216,45,30)" rx="2" ry="2" />
+<text text-anchor="" x="396.92" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >NativeM..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runInThisContext node.js:868 (3 samples, 1.44%)</title><rect x="664.9" y="289" width="17.0" height="15.0" fill="rgb(244,177,37)" rx="2" ry="2" />
+<text text-anchor="" x="667.93" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>createWritableStdioStream node.js:583 (6 samples, 2.87%)</title><rect x="1065.8" y="193" width="33.9" height="15.0" fill="rgb(207,1,52)" rx="2" ry="2" />
+<text text-anchor="" x="1068.79" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cr..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>WriteStream tty.js:54 (6 samples, 2.87%)</title><rect x="1020.6" y="177" width="33.9" height="15.0" fill="rgb(254,62,27)" rx="2" ry="2" />
+<text text-anchor="" x="1023.62" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Wr..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::FunctionTemplate::GetFunction (1 samples, 0.48%)</title><rect x="721.4" y="241" width="5.6" height="15.0" fill="rgb(217,173,38)" rx="2" ry="2" />
+<text text-anchor="" x="724.39" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Writable _stream_writable.js:130 (1 samples, 0.48%)</title><rect x="1043.2" y="129" width="5.7" height="15.0" fill="rgb(254,31,41)" rx="2" ry="2" />
+<text text-anchor="" x="1046.21" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::FunctionTemplate::GetFunction (1 samples, 0.48%)</title><rect x="1054.5" y="129" width="5.6" height="15.0" fill="rgb(214,127,5)" rx="2" ry="2" />
+<text text-anchor="" x="1057.50" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>PropertyDescriptor native v8natives.js:281 (1 samples, 0.48%)</title><rect x="478.6" y="161" width="5.7" height="15.0" fill="rgb(241,229,41)" rx="2" ry="2" />
+<text text-anchor="" x="481.61" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_dl_lookup_symbol_x (1 samples, 0.48%)</title><rect x="49.5" y="385" width="5.7" height="15.0" fill="rgb(227,229,44)" rx="2" ry="2" />
+<text text-anchor="" x="52.52" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runInThisContext node.js:868 (2 samples, 0.96%)</title><rect x="461.7" y="209" width="11.3" height="15.0" fill="rgb(243,68,3)" rx="2" ry="2" />
+<text text-anchor="" x="464.67" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>addListener events.js:191 (1 samples, 0.48%)</title><rect x="1060.1" y="193" width="5.7" height="15.0" fill="rgb(224,16,44)" rx="2" ry="2" />
+<text text-anchor="" x="1063.14" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnboundInternal (7 samples, 3.35%)</title><rect x="540.7" y="257" width="39.5" height="15.0" fill="rgb(245,18,3)" rx="2" ry="2" />
+<text text-anchor="" x="543.72" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v8:..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.require node.js:883 (44 samples, 21.05%)</title><rect x="331.8" y="337" width="248.4" height="15.0" fill="rgb(217,186,29)" rx="2" ry="2" />
+<text text-anchor="" x="334.82" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >NativeModule.require node.js:883</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::Script::Compile (5 samples, 2.39%)</title><rect x="845.6" y="385" width="28.2" height="15.0" fill="rgb(213,38,14)" rx="2" ry="2" />
+<text text-anchor="" x="848.60" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Function:~ _stream_passthrough.js:1 (1 samples, 0.48%)</title><rect x="405.2" y="161" width="5.7" height="15.0" fill="rgb(246,18,28)" rx="2" ry="2" />
+<text text-anchor="" x="408.22" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>onwrite _stream_writable.js:314 (2 samples, 0.96%)</title><rect x="919.0" y="129" width="11.3" height="15.0" fill="rgb(245,85,0)" rx="2" ry="2" />
+<text text-anchor="" x="922.00" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Function:~ constants.js:1 (1 samples, 0.48%)</title><rect x="377.0" y="209" width="5.6" height="15.0" fill="rgb(236,70,23)" rx="2" ry="2" />
+<text text-anchor="" x="379.99" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.cache node.js:962 (1 samples, 0.48%)</title><rect x="371.3" y="225" width="5.7" height="15.0" fill="rgb(233,172,21)" rx="2" ry="2" />
+<text text-anchor="" x="374.34" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Function:~ util.js:1 (1 samples, 0.48%)</title><rect x="614.1" y="193" width="5.7" height="15.0" fill="rgb(227,223,13)" rx="2" ry="2" />
+<text text-anchor="" x="617.11" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::FunctionTemplate::GetFunction (1 samples, 0.48%)</title><rect x="964.2" y="49" width="5.6" height="15.0" fill="rgb(242,26,0)" rx="2" ry="2" />
+<text text-anchor="" x="967.16" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Function:~ _stream_duplex.js:1 (1 samples, 0.48%)</title><rect x="399.6" y="161" width="5.6" height="15.0" fill="rgb(254,219,7)" rx="2" ry="2" />
+<text text-anchor="" x="402.57" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::CreateEnvironment (1 samples, 0.48%)</title><rect x="100.3" y="417" width="5.7" height="15.0" fill="rgb(224,162,36)" rx="2" ry="2" />
+<text text-anchor="" x="103.33" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>PostExperimentals native prologue.js:139 (1 samples, 0.48%)</title><rect x="1127.9" y="401" width="5.6" height="15.0" fill="rgb(228,47,22)" rx="2" ry="2" />
+<text text-anchor="" x="1130.89" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>malloc_consolidate (1 samples, 0.48%)</title><rect x="94.7" y="433" width="5.6" height="15.0" fill="rgb(223,117,16)" rx="2" ry="2" />
+<text text-anchor="" x="97.69" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>listOnTimeout timers.js:56 (40 samples, 19.14%)</title><rect x="879.5" y="321" width="225.8" height="15.0" fill="rgb(232,63,51)" rx="2" ry="2" />
+<text text-anchor="" x="882.47" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >listOnTimeout timers.js:56</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::ContextifyScript::New (8 samples, 3.83%)</title><rect x="535.1" y="289" width="45.1" height="15.0" fill="rgb(248,121,30)" rx="2" ry="2" />
+<text text-anchor="" x="538.07" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >node..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ReadableState _stream_readable.js:15 (1 samples, 0.48%)</title><rect x="1077.1" y="113" width="5.6" height="15.0" fill="rgb(217,78,31)" rx="2" ry="2" />
+<text text-anchor="" x="1080.08" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runInThisContext node.js:868 (4 samples, 1.91%)</title><rect x="619.8" y="193" width="22.5" height="15.0" fill="rgb(253,136,6)" rx="2" ry="2" />
+<text text-anchor="" x="622.76" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >r..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::TimerWrap::OnTimeout (41 samples, 19.62%)</title><rect x="873.8" y="385" width="231.5" height="15.0" fill="rgb(226,38,39)" rx="2" ry="2" />
+<text text-anchor="" x="876.83" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >node::TimerWrap::OnTimeout</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnboundInternal (9 samples, 4.31%)</title><rect x="484.3" y="209" width="50.8" height="15.0" fill="rgb(245,129,33)" rx="2" ry="2" />
+<text text-anchor="" x="487.26" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v8::S..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Function:~ native harmony-object.js:2 (1 samples, 0.48%)</title><rect x="1122.2" y="401" width="5.7" height="15.0" fill="rgb(207,183,9)" rx="2" ry="2" />
+<text text-anchor="" x="1125.25" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Uint8Array native typedarray.js:122 (1 samples, 0.48%)</title><rect x="292.3" y="193" width="5.6" height="15.0" fill="rgb(218,85,24)" rx="2" ry="2" />
+<text text-anchor="" x="295.30" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.compile node.js:949 (13 samples, 6.22%)</title><rect x="681.9" y="305" width="73.4" height="15.0" fill="rgb(209,110,9)" rx="2" ry="2" />
+<text text-anchor="" x="684.87" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >NativeMo..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>some native array.js:969 (4 samples, 1.91%)</title><rect x="122.9" y="353" width="22.6" height="15.0" fill="rgb(207,119,11)" rx="2" ry="2" />
+<text text-anchor="" x="125.92" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >s..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CallIC:A call IC from the snapshot (1 samples, 0.48%)</title><rect x="393.9" y="161" width="5.7" height="15.0" fill="rgb(231,88,3)" rx="2" ry="2" />
+<text text-anchor="" x="396.92" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnboundInternal (3 samples, 1.44%)</title><rect x="664.9" y="241" width="17.0" height="15.0" fill="rgb(208,10,36)" rx="2" ry="2" />
+<text text-anchor="" x="667.93" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__dynamic_cast (1 samples, 0.48%)</title><rect x="38.2" y="417" width="5.7" height="15.0" fill="rgb(236,194,51)" rx="2" ry="2" />
+<text text-anchor="" x="41.23" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::HandleScope::HandleScope (1 samples, 0.48%)</title><rect x="535.1" y="273" width="5.6" height="15.0" fill="rgb(224,63,2)" rx="2" ry="2" />
+<text text-anchor="" x="538.07" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>forEach native array.js:943 (2 samples, 0.96%)</title><rect x="473.0" y="241" width="11.3" height="15.0" fill="rgb(253,213,30)" rx="2" ry="2" />
+<text text-anchor="" x="475.97" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnboundInternal (1 samples, 0.48%)</title><rect x="681.9" y="193" width="5.6" height="15.0" fill="rgb(224,10,30)" rx="2" ry="2" />
+<text text-anchor="" x="684.87" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnboundInternal (4 samples, 1.91%)</title><rect x="619.8" y="145" width="22.5" height="15.0" fill="rgb(225,44,36)" rx="2" ry="2" />
+<text text-anchor="" x="622.76" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnbound (4 samples, 1.91%)</title><rect x="619.8" y="161" width="22.5" height="15.0" fill="rgb(249,225,2)" rx="2" ry="2" />
+<text text-anchor="" x="622.76" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::Object::ForceSet (1 samples, 0.48%)</title><rect x="377.0" y="145" width="5.6" height="15.0" fill="rgb(221,113,9)" rx="2" ry="2" />
+<text text-anchor="" x="379.99" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::DefineConstants (1 samples, 0.48%)</title><rect x="377.0" y="177" width="5.6" height="15.0" fill="rgb(245,53,45)" rx="2" ry="2" />
+<text text-anchor="" x="379.99" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::Function::Call (41 samples, 19.62%)</title><rect x="873.8" y="353" width="231.5" height="15.0" fill="rgb(240,209,22)" rx="2" ry="2" />
+<text text-anchor="" x="876.83" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v8::Function::Call</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>realpathSync fs.js:1383 (6 samples, 2.87%)</title><rect x="213.3" y="257" width="33.8" height="15.0" fill="rgb(226,41,34)" rx="2" ry="2" />
+<text text-anchor="" x="216.25" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >re..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Revive native json.js:16 (7 samples, 3.35%)</title><rect x="783.5" y="289" width="39.5" height="15.0" fill="rgb(209,60,42)" rx="2" ry="2" />
+<text text-anchor="" x="786.49" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Rev..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.compile node.js:949 (10 samples, 4.78%)</title><rect x="958.5" y="113" width="56.5" height="15.0" fill="rgb(253,97,44)" rx="2" ry="2" />
+<text text-anchor="" x="961.52" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Nativ..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::ContextifyScript::New (8 samples, 3.83%)</title><rect x="416.5" y="145" width="45.2" height="15.0" fill="rgb(229,120,18)" rx="2" ry="2" />
+<text text-anchor="" x="419.51" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >node..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnbound (8 samples, 3.83%)</title><rect x="416.5" y="129" width="45.2" height="15.0" fill="rgb(214,36,41)" rx="2" ry="2" />
+<text text-anchor="" x="419.51" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >v8::..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.compile node.js:949 (1 samples, 0.48%)</title><rect x="681.9" y="257" width="5.6" height="15.0" fill="rgb(244,122,19)" rx="2" ry="2" />
+<text text-anchor="" x="684.87" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Duplex _stream_duplex.js:23 (4 samples, 1.91%)</title><rect x="1031.9" y="145" width="22.6" height="15.0" fill="rgb(207,96,51)" rx="2" ry="2" />
+<text text-anchor="" x="1034.91" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >D..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ToPropertyDescriptor native v8natives.js:234 (1 samples, 0.48%)</title><rect x="958.5" y="65" width="5.7" height="15.0" fill="rgb(210,67,44)" rx="2" ry="2" />
+<text text-anchor="" x="961.52" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::Object::Set (1 samples, 0.48%)</title><rect x="117.3" y="305" width="5.6" height="15.0" fill="rgb(220,60,28)" rx="2" ry="2" />
+<text text-anchor="" x="120.27" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>defineProperty native v8natives.js:763 (1 samples, 0.48%)</title><rect x="958.5" y="81" width="5.7" height="15.0" fill="rgb(228,121,50)" rx="2" ry="2" />
+<text text-anchor="" x="961.52" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>EventEmitter.init events.js:23 (1 samples, 0.48%)</title><rect x="173.7" y="321" width="5.7" height="15.0" fill="rgb(226,191,43)" rx="2" ry="2" />
+<text text-anchor="" x="176.73" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>WritableState.onwrite _stream_writable.js:88 (2 samples, 0.96%)</title><rect x="919.0" y="145" width="11.3" height="15.0" fill="rgb(214,66,32)" rx="2" ry="2" />
+<text text-anchor="" x="922.00" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Function:~ tty.js:1 (10 samples, 4.78%)</title><rect x="958.5" y="145" width="56.5" height="15.0" fill="rgb(242,173,13)" rx="2" ry="2" />
+<text text-anchor="" x="961.52" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Funct..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runInThisContext node.js:868 (8 samples, 3.83%)</title><rect x="416.5" y="161" width="45.2" height="15.0" fill="rgb(225,139,49)" rx="2" ry="2" />
+<text text-anchor="" x="419.51" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >runI..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>v8::ScriptCompiler::CompileUnbound (1 samples, 0.48%)</title><rect x="1099.7" y="193" width="5.6" height="15.0" fill="rgb(252,57,5)" rx="2" ry="2" />
+<text text-anchor="" x="1102.67" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Console.log console.js:35 (9 samples, 4.31%)</title><rect x="879.5" y="257" width="50.8" height="15.0" fill="rgb(254,142,41)" rx="2" ry="2" />
+<text text-anchor="" x="882.47" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Conso..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Function:~ stream.js:1 (14 samples, 6.70%)</title><rect x="382.6" y="209" width="79.1" height="15.0" fill="rgb(254,178,1)" rx="2" ry="2" />
+<text text-anchor="" x="385.63" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >Function:..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Duplex _stream_duplex.js:23 (3 samples, 1.44%)</title><rect x="1077.1" y="145" width="16.9" height="15.0" fill="rgb(247,191,29)" rx="2" ry="2" />
+<text text-anchor="" x="1080.08" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::Binding (1 samples, 0.48%)</title><rect x="117.3" y="353" width="5.6" height="15.0" fill="rgb(223,55,30)" rx="2" ry="2" />
+<text text-anchor="" x="120.27" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>fs.js:172 (1 samples, 0.48%)</title><rect x="478.6" y="209" width="5.7" height="15.0" fill="rgb(225,106,54)" rx="2" ry="2" />
+<text text-anchor="" x="481.61" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node.js:629 (19 samples, 9.09%)</title><rect x="952.9" y="209" width="107.2" height="15.0" fill="rgb(228,92,48)" rx="2" ry="2" />
+<text text-anchor="" x="955.87" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >node.js:629</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Socket._writeGeneric net.js:622 (3 samples, 1.44%)</title><rect x="913.3" y="161" width="17.0" height="15.0" fill="rgb(221,8,31)" rx="2" ry="2" />
+<text text-anchor="" x="916.35" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NativeModule.require node.js:883 (5 samples, 2.39%)</title><rect x="614.1" y="225" width="28.2" height="15.0" fill="rgb(231,180,36)" rx="2" ry="2" />
+<text text-anchor="" x="617.11" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >N..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ToPropertyDescriptor native v8natives.js:234 (1 samples, 0.48%)</title><rect x="591.5" y="305" width="5.7" height="15.0" fill="rgb(245,192,15)" rx="2" ry="2" />
+<text text-anchor="" x="594.53" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__memmove_ssse3_back (1 samples, 0.48%)</title><rect x="828.7" y="305" width="5.6" height="15.0" fill="rgb(226,88,52)" rx="2" ry="2" />
+<text text-anchor="" x="831.66" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>dl_main (1 samples, 0.48%)</title><rect x="49.5" y="417" width="5.7" height="15.0" fill="rgb(246,127,54)" rx="2" ry="2" />
+<text text-anchor="" x="52.52" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Function:~ events.js:1 (1 samples, 0.48%)</title><rect x="343.1" y="305" width="5.7" height="15.0" fill="rgb(226,27,5)" rx="2" ry="2" />
+<text text-anchor="" x="346.11" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Socket net.js:109 (6 samples, 2.87%)</title><rect x="1020.6" y="161" width="33.9" height="15.0" fill="rgb(225,50,47)" rx="2" ry="2" />
+<text text-anchor="" x="1023.62" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >So..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>exports.active timers.js:31 (1 samples, 0.48%)</title><rect x="275.4" y="225" width="5.6" height="15.0" fill="rgb(234,197,1)" rx="2" ry="2" />
+<text text-anchor="" x="278.36" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Uint8ArrayConstructByArrayBuffer native typedarray.js:35 (1 samples, 0.48%)</title><rect x="292.3" y="177" width="5.6" height="15.0" fill="rgb(205,198,15)" rx="2" ry="2" />
+<text text-anchor="" x="295.30" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ssleay_rand_status (1 samples, 0.48%)</title><rect x="1178.7" y="305" width="5.7" height="15.0" fill="rgb(250,19,15)" rx="2" ry="2" />
+<text text-anchor="" x="1181.71" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::ContextifyScript::New (1 samples, 0.48%)</title><rect x="681.9" y="225" width="5.6" height="15.0" fill="rgb(205,6,9)" rx="2" ry="2" />
+<text text-anchor="" x="684.87" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>exports.deprecate internal/util.js:10 (1 samples, 0.48%)</title><rect x="715.7" y="273" width="5.7" height="15.0" fill="rgb(250,216,24)" rx="2" ry="2" />
+<text text-anchor="" x="718.74" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runInThisContext node.js:868 (8 samples, 3.83%)</title><rect x="969.8" y="97" width="45.2" height="15.0" fill="rgb(228,127,4)" rx="2" ry="2" />
+<text text-anchor="" x="972.81" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >runI..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>node::DefineSignalConstants (1 samples, 0.48%)</title><rect x="377.0" y="161" width="5.6" height="15.0" fill="rgb(208,161,32)" rx="2" ry="2" />
+<text text-anchor="" x="379.99" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+</svg>
